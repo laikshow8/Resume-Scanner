@@ -1,113 +1,154 @@
-import pandas as pd
+from dotenv import load_dotenv
 import streamlit as st
-import pickle
+from PyPDF2 import PdfReader
+import docx2txt
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import HumanMessage
+from langchain import PromptTemplate
 import json
-import re
-import string
-from nltk.tokenize import word_tokenize
-import sys
-import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-import nltk
-from nltk.corpus import stopwords
-import ssl
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
-nltk.download('stopwords')
-nltk.download('punkt')
 
-# setting of english stop words
-setofStopWords = set(stopwords.words('english')+['``', "''"])
+function_descriptions = [
+    {
+        "name": "scan_resume",
+        "description": "Scans a resume and returns relevant information",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the person"
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email of the person"
+                },
+                "phone": {
+                    "type": "string",
+                    "description": "Phone number of the person"
+                },
+                "education": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "school": {
+                                "type": "string",
+                                "description": "Name of the school"
+                            },
+                            "degree_or_certificate": {
+                                "type": "string",
+                                "description": "Degree or certificate"
+                            },
+                            "time_period": {
+                                "type": "string",
+                                "description": "Time period of education"
+                            },
+                        },
+                    },
+                    "description": "Education of the person",
+                },
+                "employment": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "company": {
+                                "type": "string",
+                                "description": "Name of the company"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Title of the person"
+                            },
+                            "time_period": {
+                                "type": "string",
+                                "description": "Time period of employment"
+                            },
+                        },
+                    },
+                    "description": "Employment history of the person",
+                },
+                "skills": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "description": "Skills of the person"
+                    },
+                },
+            },
+            "required": ["name", "email", "skills"]
+        }
+    }
+]
 
-# function to clean user resume text
-
-
-def cleanResume(resumeData):
-    resumeData = re.sub('http\S+\s*', ' ', resumeData)  # remove URLs
-    resumeData = re.sub('RT|cc', ' ', resumeData)  # remove RT and cc
-    resumeData = re.sub('#\S+', '', resumeData)  # remove hashtags
-    resumeData = re.sub('@\S+', '  ', resumeData)  # remove mentions
-    resumeData = re.sub('[%s]' % re.escape(
-        """!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""), ' ', resumeData)  # remove punctuations
-    resumeData = re.sub(r'[^\x00-\x7f]', r' ', resumeData)
-    resumeData = re.sub('\s+', ' ', resumeData)  # remove extra whitespace
-    resumeData = resumeData.lower()  # convert to lowercase
-    resumeDataTokens = word_tokenize(resumeData)  # tokenize
-    # remove stopwords
-    filteredData = [w for w in resumeDataTokens if not w in setofStopWords]
-    return ' '.join(filteredData)
-
-
-st.markdown('''
-# Resume Screening App using Python, Tensorflow and Streamlit
-
-### A simple resume scanner to check the job probability of a CV based on skills.
-
-**Credits**
-- App built by [Baburaj R](https://linkedin.com/in/baburajr88/)
-- Built in `Python` using `Tensorflow`, `Keras`, `NLTK` and `Streamlit`
-''')
-
-user_input = st.text_area("Paste your resume below")
-# cleaning the user input
-cleaned_input = cleanResume(user_input)
-# user_input = st.empty()
-submit = st.button('Submit')
-# settings for padding sequence
-max_length = 3000
-trunc_type = 'post'
-padding_type = 'post'
-
-# getting feature text tokenizer for model training
-with open('assets/feature_token/feature_tokenizer.pickle', 'rb') as handle:
-    feature_tokenizer = pickle.load(handle)
-
-# getting label encoding dictionary from model training
-with open('assets/dict/dictionary.pickle', 'rb') as handle:
-    encoding_to_label = pickle.load(handle)
-
-# handling unknown label case and load original labels from json file
-encoding_to_label[0] = 'unknown'
-with open("assets/labels.json", "r") as read_file:
-    original_labels = json.load(read_file)
-
-# converting user input to padded sequence
-predict_sequences = feature_tokenizer.texts_to_sequences([cleaned_input])
-predict_padded = pad_sequences(
-    predict_sequences, maxlen=max_length, padding=padding_type, truncating=trunc_type)
-predict_padded = np.array(predict_padded)
-
-# loading model and make prediction
-model = keras.models.load_model('assets/model/')
-prediction = model.predict(predict_padded)
-
-encodings = np.argpartition(prediction[0], -5)[-5:]
-encodings = encodings[np.argsort(prediction[0][encodings])]
-encodings = reversed(encodings)
-
-# function to predict the probability
+template = """/
+Scan the following resume and return the relevant details.
+If the data is missing just return N/A
+Resume: {resume}
+"""
 
 
-def scanning():
-    predict = []
-    for encoding in encodings:
-        label = encoding_to_label[encoding]
-        probability = prediction[0][encoding] * 100
-        probability = round(probability, 2)
-        predict.append('{} - {}%'.format(original_labels[label], probability))
-    return predict
+def main():
+    load_dotenv()
+
+    llm = ChatOpenAI(model="gpt-4-0613")
+
+    st.write("# Resume Scanner")
+
+    st.write("### Upload Your Resume")
+
+    status = st.empty()
+
+    file = st.file_uploader("PDF, Word Doc", type=["pdf", "docx"])
+
+    details = st.empty()
+
+    if file is not None:
+        with st.spinner("Scanning..."):
+            text = ""
+            if file.type == "application/pdf":
+                pdf_reader = PdfReader(file)
+                for page in pdf_reader.pages:
+                    text += page.extract_text()
+
+            if file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                text += docx2txt.process(file)
+
+            prompt = PromptTemplate.from_template(template)
+            content = prompt.format(resume=text)
+
+            response = llm.predict_messages(
+                [HumanMessage(content=content)],
+                functions=function_descriptions)
+
+            data = json.loads(
+                response.additional_kwargs["function_call"]["arguments"])
+
+        with details.container():
+            st.write("## Details")
+            st.write(f"Name: {data['name']}")
+            st.write(f"Email: {data['email']}")
+            st.write(f"Phone: {data['phone']}")
+            st.write("Education:")
+            for education in data['education']:
+                st.markdown(f"""
+                    * {education['school']}
+                        - {education['degree_or_certificate']}
+                        - {education['time_period']}
+                """)
+            st.write("Employment:")
+            for employment in data['employment']:
+                st.markdown(f"""
+                    * {employment['company']}
+                        - {employment['title']}
+                        - {employment['time_period']}
+                """)
+            st.write("Skills:")
+            for skill in data['skills']:
+                st.write(f" - {skill}")
+
+        status = status.success("Resume Scanned Successfully")
 
 
-pred = scanning()
-
-if submit:
-    for i in range(len(pred)):
-        st.write(pred[i])
-    user_input = " "
+if __name__ == '__main__':
+    main()
