@@ -1,0 +1,6 @@
+nltk
+numpy
+pandas
+streamlit
+tensorflow
+pickleshare==0.7.5
